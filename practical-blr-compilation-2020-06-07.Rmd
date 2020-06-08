@@ -1,0 +1,233 @@
+---
+title: "Practical Work Compilation"
+author: "Franziska Günther"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: architect
+    highlight: github
+---
+
+# Linear Regression with Stan 
+
+```{r, echo=F, fig.align='center', message=F, results="hide"}
+library(ggplot2)
+library(rstan)
+library(heavy)
+library(gridExtra)
+library(gdata)
+library(bayesplot)
+
+seaice <- read.csv("seaice.csv", stringsAsFactors = F)
+```
+
+The Coding Club Introduction to Stan made use of a dataset featuring N = 39 data points
+from years 1979 through 2017 during which sea ice extent was measured for the northern 
+and southern hemisphere. 
+
+```{r, echo=F, fig.align='center', message=F,}
+
+head(seaice)
+
+N <- length(seaice$year)
+df <- data.frame(year=rep(seaice$year, 2), extent=c(seaice$extent_north, seaice$extent_south), hemisphere=as.factor(c(rep("north", N), rep("south", N))))
+
+ggplot(df, aes(year, extent, colour = hemisphere, shape = hemisphere)) +
+  geom_point(size = 2.5) +
+  geom_smooth(method = lm)
+```
+
+While a Bayesian Linear Model (non-informative prior) was successfully fitted to northern hemisphere sea ice data, which was found to decline over time, the tutorial invites to explore if data for the southern hemisphere shows the same development. 
+
+The scatter plot above and the below model fit diagnostics make it obvious that the univariate linear model is a worse fit for the southern hemisphere data (see particularly adjusted R-squared). The choice of model for the data is crucial since it is fed into the Stan model as the likelihood function that will be compared to the prior. 
+
+```{r, echo=F}
+seaice$yearscaled <- seaice$year - 1978
+lm_sh <- lm(extent_south ~ yearscaled, data = seaice) 
+summary(lm_sh)
+
+lm_a_sh <- summary(lm_sh)$coeff[1]  
+lm_b_sh <- summary(lm_sh)$coeff[2]  
+lm_sigma_sh <- sigma(lm_sh)
+```
+
+Predictions of the model as well as the proposed noise model don't match data particularly well.
+
+```{r, echo=F, fig.align='center', fig.height=3, fig.width=6}
+seaice$extent_south_pred <- lm_a_sh + lm_b_sh*seaice$yearscaled
+seaice$residuals <- seaice$extent_south_pred - seaice$extent_south
+
+plt_prd <- ggplot(seaice) + geom_point(mapping = aes(x = extent_south, y = extent_south_pred))
+plt_res <- ggplot(seaice, aes(sample = residuals)) + stat_qq() + stat_qq_line()
+
+grid.arrange(plt_prd, plt_res, nrow=1)
+
+```
+
+Homoscedasticity cannot be assumed: Residuals first increase and then decrease as fitted values increase.
+
+```{r, echo=F, fig.align='center', message=F}
+
+# taken over from https://rpubs.com/therimalaya/43190
+
+p1<-ggplot(lm_sh, aes(.fitted, .resid))+geom_point()
+p1<-p1+stat_smooth(method="loess")+geom_hline(yintercept=0, col="red", linetype="dashed")
+p1<-p1+xlab("Fitted values")+ylab("Residuals")
+p1<-p1+ggtitle("Residual vs Fitted Plot")+theme_bw()
+    
+p3<-ggplot(lm_sh, aes(.fitted, sqrt(abs(.stdresid))))+geom_point(na.rm=TRUE)
+p3<-p3+stat_smooth(method="loess", na.rm = TRUE)+xlab("Fitted Value")
+p3<-p3+ylab(expression(sqrt("|Standardized residuals|")))
+p3<-p3+ggtitle("Scale-Location")+theme_bw()
+
+grid.arrange(p1, p3, nrow=1)
+```
+
+Preliminary considerations of modelling sea ice data differently included polynomial functions of the covariate (quickly discarded) and a t-distribution instead of the normal to allow for more probability density in the tails. However, linear regression under the t-distribution yielded regression coefficients very similar to the ones obtained by the one under the normal distribution.
+
+```{r, echo=F}
+lm_sh_t <- heavyLm(extent_south ~ yearscaled, data = seaice, family = Student())
+summary(lm_sh_t)
+```
+
+Since available sample size is very small, and out of concern to overfit data with a more complicated (polynomial) model, I nevertheless decided to proceed with the linear regression model.
+
+It has to be noted that a small sample size in the Bayesian process gives a potential prior more weight anyway and therefore makes it easy to overrun evidence of data. On the other hand, I admit to be completely naive about the development of sea ice extent in the southern hemisphere.
+
+Therefore, I chose a non-informative uniform joint prior (is the default proportional to an improper 1/$\sigma^2$ in Stan?) over ($\beta_{y_0}, \beta_{y_1}, \sigma^2$) despite the risk of not having much information in total as a result if prior information is seen as hypothetical data points. This means, even after collecting data, we could well be groping in the dark about the development of sea ice.
+
+Set up of Stan model and data fed into it:
+
+```{r, results="hide", message=F}
+x <- I(seaice$year - 1978)
+y <- seaice$extent_south
+stan_data <- list(N = N, x = x, y = y)
+
+write("// Stan model for simple linear regression
+
+data {
+ int < lower = 1 > N; // Sample size with lower bound of 1
+ vector[N] x; // Predictor
+ vector[N] y; // Outcome
+}
+
+parameters {
+ real alpha; // Intercept
+ real beta; // Slope (regression coefficients)
+ real < lower = 0 > sigma; // Error SD with lower bound 0
+}
+
+model {
+ y ~ normal(alpha + x * beta , sigma);
+}
+
+generated quantities {
+ real y_rep[N];
+
+ for (n in 1:N) {
+  y_rep[n] = normal_rng(x[n] * beta + alpha, sigma);
+ }
+} // The posterior predictive distribution",
+
+"stan_model1.stan")
+
+stan_model1 <- "stan_model1.stan"
+
+fit <- stan(file = stan_model1, data = stan_data, warmup = 500, iter = 1000, chains = 4, cores = 2, thin = 1)
+```
+
+Now, what we can do in Bayesian linear regression, but not in frequentist, since we obtained posterior distributions of our parameters alpha and beta and not only point estimates, is plotting the resulting regression lines that are possible under our posterior distributions.
+
+```{r, echo=F, fig.align='center'}
+mu_tau_summary <- summary(fit, pars = c("alpha", "beta", "sigma"))$summary
+print(mu_tau_summary)
+
+posterior <- extract(fit)
+
+plot(y ~ x, pch = 20)
+
+for (i in 1:500) {
+ abline(posterior$alpha[i], posterior$beta[i], col = "gray", lty = 1)
+}
+
+abline(mean(posterior$alpha), mean(posterior$beta), col = 6, lw = 2)
+```
+
+Chains seem to have converged and the effective sample size is sufficiently large (see also figure below).
+
+```{r, echo=F, fig.height=4, fig.align='center'}
+traceplot(fit, pars = c("alpha", "beta", "sigma"))
+```
+
+Posterior distributions of parameters: To obtain each, the other parameters have to be integrated out of the joint posterior distribution of all parameters. Mean estimate and standard error correspond to the ones obtained by the frequentist estimation. 
+
+If we would have imposed an informative conjugate prior, it would have to follow a Normal-Gamma distribution since neither mean nor variance is known to us. We would have to place a marginal prior over sigma, and a joint prior over alpha and beta, conditional on sigma.
+
+```{r, echo=F, fig.align='center', fig.height=4}
+stan_dens(fit, pars = c("alpha", "beta", "sigma"))
+```
+
+```{r}
+# Posterior probability of beta being greater than 0
+sum(posterior$beta > 0)/length(posterior$beta) 
+# Posterior probability of beta being greater than 0
+sum(posterior$beta > 0.05)/length(posterior$beta) 
+```
+
+The posterior distribution of beta lies, as expected, much probability density on parameters very close to zero. 
+
+Below, densities of the first 200 iterations, that created 39 datapoints each, are plotted against the density of the original data (dark).  
+
+```{r, echo=F, fig.align='center'}
+color_scheme_set("green")
+y_rep <- as.matrix(fit, pars = "y_rep")
+ppc_dens_overlay(y, y_rep[1:200, ])
+```
+
+# End-of-chapter exercises (BDA3, chapter 2)
+
+## 1
+
+The Beta prior distribution (first factor is a constant)
+
+$$
+ p(\theta) = \frac{\Gamma(4+4)}{\Gamma(4)\Gamma(4)} \theta^3 (1-\theta)^3
+$$
+
+is multiplied with the Binomial likelihood. For the case x < 3, three possibilities (x=2, x=1, x=0) have to be considered and added up
+
+$$
+ p(\theta|x<3) = {10 \choose 2} \theta^{3+2} (1-\theta)^{3+10-2} + {10 \choose 1} \theta^{3+1} (1-\theta)^{3+10-1} + {10 \choose 0} \theta^{3+0} (1-\theta)^{3+10-0}
+$$
+Posterior probability density for $\theta$
+
+```{r, message=F}
+theta <- seq(0,1,.01)
+df <- data.frame(theta = theta, prob = (45*theta^5*(1-theta)^11 + 10*theta^4*(1-theta)^12 + theta^3*(1-theta)^13))
+
+plot_ex1 <- ggplot(df, aes(x=theta, y=prob)) + 
+  geom_line(color="darkblue") 
+
+print(plot_ex1)
+```
+
+## 3
+
+$$
+p(y|\theta) \sim N(n=1000 \cdot p=\frac{1}{6}, n=1000 \cdot p=\frac{1}{6} \cdot (1-p)=\frac{5}{6})
+$$
+```{r, message=F}
+y <- seq(1, 1000, 1)
+mu <- 1000*(1/6)
+sigma <- sqrt(1000*(1/6)*(5/6))
+df <- data.frame(y=y, prob=dnorm(y, mu, sigma))
+
+plot_ex3 <- ggplot(df, aes(x=y, y=prob)) + 
+  geom_line(color="darkblue") + 
+  xlim(120, 220)
+
+print(plot_ex3)
+
+# 5% of density lies left of the following number of 6's
+qnorm(0.05, mu, sigma) 
+```
