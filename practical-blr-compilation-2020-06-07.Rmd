@@ -118,7 +118,12 @@ parameters {
 }
 
 model {
- y ~ normal(alpha + x * beta , sigma);
+  alpha ~ normal(INSERT PARAMS) // introduce priors on alpha and beta
+  beta ~ normal(INSERT PARAMS) // 
+  
+  alpha ~ exp(INSERT PARAM) // introduce an exponential prior on alpha and beta
+  beta ~ exp(INSERT PARAM) // LOOK AT LASSO REGRESSION
+ y ~ normal(alpha + x * beta , sigma); // CY: change this to Student-t (with additional dof parameter)
 }
 
 generated quantities {
