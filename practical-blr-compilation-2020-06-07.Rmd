@@ -115,17 +115,25 @@ parameters {
  real alpha; // Intercept
  real beta; // Slope (regression coefficients)
  real < lower = 0 > sigma; // Error SD with lower bound 0
+ real<lower=1> nu; // degrees of freedom
 }
 
 model {
- y ~ normal(alpha + x * beta , sigma);
+ // alpha ~ normal(0.0, 10); // normal prior
+ // beta ~ normal(0.0, 0.5); // normal prior
+ alpha ~ exponential(0.1); // exponential prior
+ beta ~ exponential(0.1); // exponential prior
+ nu ~ gamma(2,0.1);
+ // y ~ normal(alpha + x * beta , sigma);
+ y ~ student_t(nu, alpha + x * beta, sigma);
 }
 
 generated quantities {
  real y_rep[N];
 
  for (n in 1:N) {
-  y_rep[n] = normal_rng(x[n] * beta + alpha, sigma);
+  // y_rep[n] = normal_rng(x[n] * beta + alpha, sigma);
+  y_rep[n] = student_t_rng(nu, x[n] * beta + alpha, sigma);
  }
 } // The posterior predictive distribution",
 
@@ -139,7 +147,7 @@ fit <- stan(file = stan_model1, data = stan_data, warmup = 500, iter = 1000, cha
 Now, what we can do in Bayesian linear regression, but not in frequentist, since we obtained posterior distributions of our parameters alpha and beta and not only point estimates, is plotting the resulting regression lines that are possible under our posterior distributions.
 
 ```{r, echo=F, fig.align='center'}
-mu_tau_summary <- summary(fit, pars = c("alpha", "beta", "sigma"))$summary
+mu_tau_summary <- summary(fit, pars = c("alpha", "beta", "sigma", "nu"))$summary
 print(mu_tau_summary)
 
 posterior <- extract(fit)
