@@ -119,7 +119,6 @@ parameters {
 }
 
 model {
-<<<<<<< HEAD
  // alpha ~ normal(0.0, 10); // normal prior
  // beta ~ normal(0.0, 0.5); // normal prior
  alpha ~ exponential(0.1); // exponential prior
